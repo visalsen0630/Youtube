@@ -412,26 +412,34 @@ function openWatchPage(video, skipHistory = false) {
   if (state.ytApiReady) {
     createYTPlayer(video.id);
   } else {
-    // Fallback: wait for API or use iframe
-    const checkReady = setInterval(() => {
+    // API not ready yet — use a direct iframe embed so autoplay works on mobile
+    // (setInterval would break the user gesture chain on mobile browsers)
+    playerContainer.innerHTML = `
+      <iframe
+        id="yt-player-iframe"
+        src="https://www.youtube.com/embed/${video.id}?autoplay=1&rel=0&playsinline=1&mute=1&enablejsapi=1"
+        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+        allowfullscreen
+      ></iframe>
+    `;
+    // Once the API becomes ready, upgrade to a proper YT.Player for auto-continue support
+    const upgradeCheck = setInterval(() => {
       if (state.ytApiReady) {
-        clearInterval(checkReady);
-        createYTPlayer(video.id);
+        clearInterval(upgradeCheck);
+        // Upgrade the existing iframe to a YT.Player instance (no re-creation needed)
+        try {
+          state.player = new YT.Player("yt-player-iframe", {
+            events: {
+              onStateChange: onPlayerStateChange,
+            },
+          });
+        } catch (e) {
+          console.warn("Could not upgrade iframe to YT.Player:", e);
+        }
       }
-    }, 100);
-    // Timeout after 5s - fallback to plain iframe
-    setTimeout(() => {
-      clearInterval(checkReady);
-      if (!state.player) {
-        playerContainer.innerHTML = `
-          <iframe
-            src="https://www.youtube.com/embed/${video.id}?autoplay=1&rel=0&playsinline=1&mute=1"
-            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-            allowfullscreen
-          ></iframe>
-        `;
-      }
-    }, 5000);
+    }, 200);
+    // Stop checking after 10 seconds
+    setTimeout(() => clearInterval(upgradeCheck), 10000);
   }
 
   // Fill video info
@@ -488,15 +496,23 @@ function createYTPlayer(videoId) {
 }
 
 function onPlayerReady(event) {
-  // Start playing (needed for mobile)
+  // Start playing (needed for mobile — muted autoplay is allowed)
   event.target.playVideo();
-  // Unmute after a short delay once playback has started
-  setTimeout(() => {
-    if (state.player && state.player.unMute) {
-      state.player.unMute();
-      state.player.setVolume(100);
+  // Wait for actual playback to begin before unmuting
+  const unmuteCheck = setInterval(() => {
+    if (state.player && state.player.getPlayerState) {
+      const ps = state.player.getPlayerState();
+      if (ps === YT.PlayerState.PLAYING) {
+        clearInterval(unmuteCheck);
+        try {
+          state.player.unMute();
+          state.player.setVolume(100);
+        } catch (e) {}
+      }
     }
-  }, 500);
+  }, 200);
+  // Stop trying after 5 seconds
+  setTimeout(() => clearInterval(unmuteCheck), 5000);
 }
 
 function onPlayerStateChange(event) {
