@@ -64,9 +64,61 @@ function onYouTubeIframeAPIReady() {
 }
 
 function init() {
-  loadTrending();
   setupEventListeners();
   renderSavedPlaylist();
+  restoreFromHash();
+}
+
+function restoreFromHash() {
+  const hash = window.location.hash;
+
+  if (hash.startsWith("#watch=")) {
+    const videoId = hash.substring(7);
+    if (videoId) {
+      // Show loading state while fetching video
+      showPage("watch");
+      ytFetch("videos", {
+        part: "snippet,statistics,contentDetails",
+        id: videoId,
+      }).then((data) => {
+        if (data.items && data.items.length > 0) {
+          const video = mapVideoItem(data.items[0]);
+          openWatchPage(video, true);
+        } else {
+          goHome(false);
+          loadTrending();
+        }
+      }).catch(() => {
+        goHome(false);
+        loadTrending();
+      });
+      // Also preload trending in background for when user goes back
+      loadTrending();
+      history.replaceState({ page: "watch", videoId }, "", hash);
+      return;
+    }
+  } else if (hash.startsWith("#search=")) {
+    const query = decodeURIComponent(hash.substring(8));
+    if (query) {
+      loadTrending();
+      performSearch(query, false);
+      history.replaceState({ page: "search", query }, "", hash);
+      return;
+    }
+  } else if (hash === "#trending") {
+    loadTrending();
+    history.replaceState({ page: "trending" }, "", hash);
+    return;
+  } else if (hash === "#library") {
+    loadTrending();
+    showLibrary();
+    history.replaceState({ page: "library" }, "", hash);
+    return;
+  }
+
+  // Default: go home
+  loadTrending();
+  history.replaceState({ page: "home" }, "", "#home");
 }
 
 // ===== API Key Modal =====
@@ -1010,9 +1062,6 @@ window.addEventListener("popstate", (e) => {
     });
   }
 });
-
-// Set initial history state
-history.replaceState({ page: "home" }, "", "#home");
 
 // ===== Source Protection =====
 (function () {
