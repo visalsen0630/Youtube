@@ -6,6 +6,7 @@ const state = {
   currentVideo: null,
   queue: [],
   queueIndex: -1,
+  relatedQueue: [],
   liked: JSON.parse(localStorage.getItem("yt_liked") || "[]"),
   commentsNextPage: null,
   commentSort: "relevance",
@@ -119,7 +120,7 @@ async function ytFetch(endpoint, params = {}) {
 }
 
 // ===== Fetch Videos =====
-async function getTrending(maxResults = 24) {
+async function getTrending(maxResults = 50) {
   const data = await ytFetch("videos", {
     part: "snippet,statistics,contentDetails",
     chart: "mostPopular",
@@ -129,13 +130,13 @@ async function getTrending(maxResults = 24) {
   return data.items.map(mapVideoItem);
 }
 
-async function searchVideos(query, maxResults = 24) {
+async function searchVideos(query, maxResults = 50) {
   const searchData = await ytFetch("search", {
     part: "snippet",
     type: "video",
     q: query,
     maxResults,
-    order: "relevance",
+    order: "date",
   });
 
   const ids = searchData.items.map((item) => item.id.videoId).filter(Boolean);
@@ -149,7 +150,7 @@ async function searchVideos(query, maxResults = 24) {
   return detailData.items.map(mapVideoItem);
 }
 
-async function getRelatedVideos(videoId, maxResults = 15) {
+async function getRelatedVideos(videoId, maxResults = 25) {
   // Use search with relatedToVideoId
   try {
     const searchData = await ytFetch("search", {
@@ -274,7 +275,7 @@ function escapeAttr(str) {
 async function loadTrending() {
   showSkeletons(dom.trendingGrid, 12);
   try {
-    const videos = await getTrending(24);
+    const videos = await getTrending(50);
     renderVideoGrid(dom.trendingGrid, videos);
   } catch (e) {
     dom.trendingGrid.innerHTML = `<p class="empty-text">Failed to load videos. Check your API key.</p>`;
@@ -332,8 +333,13 @@ function renderVideoGrid(container, videos) {
 }
 
 // ===== Watch Page (Video Player) =====
-function openWatchPage(video) {
+function openWatchPage(video, skipHistory = false) {
   state.currentVideo = video;
+
+  // Push browser history so back button works
+  if (!skipHistory) {
+    history.pushState({ page: "watch", videoId: video.id }, "", "#watch=" + video.id);
+  }
 
   // Show watch page, hide others
   showPage("watch");
@@ -367,7 +373,7 @@ function openWatchPage(video) {
       if (!state.player) {
         playerContainer.innerHTML = `
           <iframe
-            src="https://www.youtube.com/embed/${video.id}?autoplay=1&rel=0"
+            src="https://www.youtube.com/embed/${video.id}?autoplay=1&rel=0&playsinline=1&mute=1"
             allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
             allowfullscreen
           ></iframe>
@@ -420,11 +426,25 @@ function createYTPlayer(videoId) {
       rel: 0,
       playsinline: 1,
       enablejsapi: 1,
+      mute: 1, // Mute initially to allow mobile autoplay
     },
     events: {
+      onReady: onPlayerReady,
       onStateChange: onPlayerStateChange,
     },
   });
+}
+
+function onPlayerReady(event) {
+  // Start playing (needed for mobile)
+  event.target.playVideo();
+  // Unmute after a short delay once playback has started
+  setTimeout(() => {
+    if (state.player && state.player.unMute) {
+      state.player.unMute();
+      state.player.setVolume(100);
+    }
+  }, 500);
 }
 
 function onPlayerStateChange(event) {
@@ -447,6 +467,12 @@ function playNext() {
   if (state.queue.length > 0 && state.queueIndex < state.queue.length - 1) {
     state.queueIndex++;
     openWatchPage(state.queue[state.queueIndex]);
+  } else if (state.relatedQueue && state.relatedQueue.length > 0) {
+    // When the current queue ends, continue with related videos
+    const nextVideo = state.relatedQueue[0];
+    state.queue = state.relatedQueue;
+    state.queueIndex = 0;
+    openWatchPage(nextVideo);
   }
 }
 
@@ -471,9 +497,11 @@ async function loadRelatedVideos(videoId) {
     .join("");
 
   try {
-    const videos = await getRelatedVideos(videoId, 15);
+    const videos = await getRelatedVideos(videoId, 25);
+    state.relatedQueue = videos;
     renderRelatedVideos(videos);
   } catch (e) {
+    state.relatedQueue = [];
     dom.relatedVideos.innerHTML = '<p class="empty-text">Could not load related videos.</p>';
     console.error(e);
   }
@@ -652,6 +680,9 @@ function showPage(page) {
   dom.searchPage.classList.toggle("hidden", page !== "search");
   dom.watchPage.classList.toggle("hidden", page !== "watch");
 
+  // Toggle body class for mobile watch page styling
+  document.body.classList.toggle("watching", page === "watch");
+
   // Show/hide chips on browse pages only
   dom.categoryChips.classList.toggle("hidden", page === "watch");
 
@@ -670,20 +701,35 @@ function showPage(page) {
   }
 }
 
-function goHome() {
+function goHome(pushState = true) {
   showPage("home");
   dom.searchInput.value = "";
   $$(".chip").forEach((c) => c.classList.remove("active"));
   $(".chip").classList.add("active");
   $$(".nav-item").forEach((n) => n.classList.remove("active"));
   $('[data-page="home"]').classList.add("active");
+  // Update bottom nav
+  $$(".bottom-nav-item").forEach((n) => n.classList.remove("active"));
+  const homeBtn = $(".bottom-nav-item[data-page='home']");
+  if (homeBtn) homeBtn.classList.add("active");
+  if (pushState) {
+    history.pushState({ page: "home" }, "", "#home");
+  }
+}
+
+function goBack() {
+  // Use browser history to go back
+  history.back();
 }
 
 // ===== Search =====
-async function performSearch(query) {
+async function performSearch(query, pushState = true) {
   if (!query.trim()) return;
   showPage("search");
   dom.searchTitle.textContent = `Results for "${query}"`;
+  if (pushState) {
+    history.pushState({ page: "search", query }, "", "#search=" + encodeURIComponent(query));
+  }
   showSkeletons(dom.searchResults, 12);
   try {
     const videos = await searchVideos(query);
@@ -699,6 +745,12 @@ async function performSearch(query) {
 function setupEventListeners() {
   // Logo → go home
   dom.logoHome.addEventListener("click", goHome);
+
+  // Watch page back button
+  const watchBackBtn = $("#watch-back-btn");
+  if (watchBackBtn) {
+    watchBackBtn.addEventListener("click", goBack);
+  }
 
   // Watch page like button
   dom.watchLikeBtn.addEventListener("click", toggleLike);
@@ -754,25 +806,86 @@ function setupEventListeners() {
       $$(".nav-item").forEach((n) => n.classList.remove("active"));
       el.classList.add("active");
 
-      const page = el.dataset.page;
-      if (page === "home") {
-        goHome();
-      } else if (page === "trending") {
-        showPage("home");
-        loadTrending();
-      } else if (page === "library") {
-        showPage("search");
-        dom.searchTitle.textContent = "Saved Videos";
-        dom.searchResults.innerHTML = "";
-        if (state.liked.length > 0) {
-          renderVideoGrid(dom.searchResults, state.liked);
-        } else {
-          dom.searchResults.innerHTML =
-            '<p class="empty-text">No saved videos yet. Click the Save button while watching to save videos.</p>';
+      navigateToPage(el.dataset.page);
+    });
+  });
+
+  // ===== Mobile: Bottom Navigation =====
+  $$(".bottom-nav-item").forEach((el) => {
+    el.addEventListener("click", () => {
+      $$(".bottom-nav-item").forEach((n) => n.classList.remove("active"));
+      el.classList.add("active");
+
+      navigateToPage(el.dataset.page);
+    });
+  });
+
+  // ===== Mobile: Logo → Home =====
+  const mobileLogoHome = $("#mobile-logo-home");
+  if (mobileLogoHome) {
+    mobileLogoHome.addEventListener("click", goHome);
+  }
+
+  // ===== Mobile: Search Toggle =====
+  const mobileSearchToggle = $("#mobile-search-toggle");
+  const mobileSearchBar = $("#mobile-search-bar");
+  const mobileSearchBack = $("#mobile-search-back");
+  const mobileSearchInput = $("#mobile-search-input");
+
+  if (mobileSearchToggle && mobileSearchBar) {
+    mobileSearchToggle.addEventListener("click", () => {
+      mobileSearchBar.classList.remove("hidden");
+      document.body.classList.add("mobile-search-active");
+      mobileSearchInput.focus();
+    });
+
+    mobileSearchBack.addEventListener("click", () => {
+      mobileSearchBar.classList.add("hidden");
+      document.body.classList.remove("mobile-search-active");
+      mobileSearchInput.value = "";
+    });
+
+    mobileSearchInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        const query = mobileSearchInput.value.trim();
+        if (query) {
+          performSearch(query);
+          mobileSearchBar.classList.add("hidden");
+          document.body.classList.remove("mobile-search-active");
         }
       }
     });
-  });
+  }
+}
+
+// ===== Shared Navigation Logic =====
+function navigateToPage(page, pushState = true) {
+  if (page === "home") {
+    goHome(pushState);
+  } else if (page === "trending") {
+    showPage("home");
+    loadTrending();
+    if (pushState) {
+      history.pushState({ page: "trending" }, "", "#trending");
+    }
+  } else if (page === "library") {
+    showLibrary();
+    if (pushState) {
+      history.pushState({ page: "library" }, "", "#library");
+    }
+  }
+}
+
+function showLibrary() {
+  showPage("search");
+  dom.searchTitle.textContent = "Saved Videos";
+  dom.searchResults.innerHTML = "";
+  if (state.liked.length > 0) {
+    renderVideoGrid(dom.searchResults, state.liked);
+  } else {
+    dom.searchResults.innerHTML =
+      '<p class="empty-text">No saved videos yet. Click the Save button while watching to save videos.</p>';
+  }
 }
 
 // ===== Media Session API (Lock Screen / Notification Controls) =====
@@ -837,3 +950,101 @@ document.addEventListener("visibilitychange", () => {
     }
   }
 });
+
+// ===== Browser History (Back/Forward Button) =====
+window.addEventListener("popstate", (e) => {
+  const s = e.state;
+  if (!s) {
+    // No state — go home
+    goHome(false);
+    return;
+  }
+
+  if (s.page === "home") {
+    goHome(false);
+  } else if (s.page === "trending") {
+    navigateToPage("trending", false);
+  } else if (s.page === "library") {
+    navigateToPage("library", false);
+  } else if (s.page === "search" && s.query) {
+    performSearch(s.query, false);
+  } else if (s.page === "watch" && s.videoId) {
+    // Re-fetch video details and open
+    ytFetch("videos", {
+      part: "snippet,statistics,contentDetails",
+      id: s.videoId,
+    }).then((data) => {
+      if (data.items && data.items.length > 0) {
+        const video = mapVideoItem(data.items[0]);
+        state.currentVideo = video;
+        showPage("watch");
+        document.querySelector(".content-area").scrollTop = 0;
+        // Destroy previous player
+        if (state.player && state.player.destroy) {
+          try { state.player.destroy(); } catch (e) {}
+          state.player = null;
+        }
+        const playerContainer = $("#yt-player");
+        playerContainer.innerHTML = '<div id="yt-player-inner"></div>';
+        if (state.ytApiReady) {
+          createYTPlayer(video.id);
+        }
+        dom.watchTitle.textContent = video.title;
+        dom.watchChannel.textContent = video.channel;
+        dom.watchAvatar.textContent = video.channel.charAt(0).toUpperCase();
+        dom.likeCount.textContent = formatNumber(video.likeCount);
+        const descText = video.description
+          ? video.description.substring(0, 300) + (video.description.length > 300 ? "..." : "")
+          : "";
+        dom.watchDescription.innerHTML = `
+          <div class="watch-stats">${formatViews(video.viewCount)}  •  ${timeAgo(video.publishedAt)}</div>
+          ${escapeHtml(descText)}
+        `;
+        dom.commentsCount.textContent = `${formatNumber(video.commentCount)} Comments`;
+        updateWatchLikeButton();
+        loadRelatedVideos(video.id);
+        loadComments(video.id);
+      }
+    }).catch(() => {
+      goHome(false);
+    });
+  }
+});
+
+// Set initial history state
+history.replaceState({ page: "home" }, "", "#home");
+
+// ===== Source Protection =====
+(function () {
+  // Disable right-click context menu
+  document.addEventListener("contextmenu", (e) => e.preventDefault());
+
+  // Disable DevTools keyboard shortcuts
+  document.addEventListener("keydown", (e) => {
+    // F12
+    if (e.key === "F12") { e.preventDefault(); return; }
+    // Ctrl+Shift+I (Inspect), Ctrl+Shift+J (Console), Ctrl+Shift+C (Element picker)
+    if (e.ctrlKey && e.shiftKey && ["I","J","C"].includes(e.key.toUpperCase())) { e.preventDefault(); return; }
+    // Ctrl+U (View Source)
+    if (e.ctrlKey && e.key.toUpperCase() === "U") { e.preventDefault(); return; }
+    // Ctrl+S (Save page)
+    if (e.ctrlKey && e.key.toUpperCase() === "S") { e.preventDefault(); return; }
+  });
+
+  // Disable drag
+  document.addEventListener("dragstart", (e) => e.preventDefault());
+
+  // DevTools detection via debugger trap
+  (function _dt() {
+    const t = new Date();
+    debugger;
+    if (new Date() - t > 100) {
+      document.body.innerHTML = "";
+    }
+    setTimeout(_dt, 3000);
+  })();
+
+  // Console clear on open
+  const _c = console.clear;
+  Object.defineProperty(console, "_c", { get: function () { document.body.innerHTML = ""; } });
+})();

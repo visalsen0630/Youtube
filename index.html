@@ -42,9 +42,45 @@
     </div>
   </aside>
 
+  <!-- Mobile Header (visible only on mobile) -->
+  <header class="mobile-header" id="mobile-header">
+    <div class="mobile-header-left" id="mobile-logo-home">
+      <img src="asset/Logo.png" alt="PlayLoop Logo" height="30">
+    </div>
+    <div class="mobile-header-right">
+      <button class="mobile-header-btn" id="mobile-search-toggle" title="Search">
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0016 9.5 6.5 6.5 0 109.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- Mobile Search Bar (hidden by default, shown on toggle) -->
+  <div class="mobile-search-bar hidden" id="mobile-search-bar">
+    <button class="mobile-search-back" id="mobile-search-back">
+      <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+    </button>
+    <input type="text" id="mobile-search-input" placeholder="Search..." />
+  </div>
+
+  <!-- Bottom Navigation (visible only on mobile) -->
+  <nav class="bottom-nav" id="bottom-nav">
+    <button class="bottom-nav-item active" data-page="home">
+      <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
+      <span>Home</span>
+    </button>
+    <button class="bottom-nav-item" data-page="trending">
+      <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M13.5.67s.74 2.65.74 4.8c0 2.06-1.35 3.73-3.41 3.73-2.07 0-3.63-1.67-3.63-3.73l.03-.36C5.21 7.51 4 10.62 4 14c0 4.42 3.58 8 8 8s8-3.58 8-8C20 8.61 17.41 3.8 13.5.67zM11.71 19c-1.78 0-3.22-1.4-3.22-3.14 0-1.62 1.05-2.76 2.81-3.12 1.77-.36 3.6-1.21 4.62-2.58.39 1.29.59 2.65.59 4.04 0 2.65-2.15 4.8-4.8 4.8z"/></svg>
+      <span>Trending</span>
+    </button>
+    <button class="bottom-nav-item" data-page="library">
+      <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-8 12.5v-9l6 4.5-6 4.5z"/></svg>
+      <span>Library</span>
+    </button>
+  </nav>
+
   <!-- Main Content -->
   <main class="main-content">
-    <!-- Top Bar -->
+    <!-- Top Bar (desktop only) -->
     <header class="top-bar">
       <div class="search-container">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="#b3b3b3"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0016 9.5 6.5 6.5 0 109.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
@@ -81,6 +117,11 @@
 
       <!-- Watch Page (Video Player) -->
       <div id="watch-page" class="hidden">
+        <div class="watch-back-bar">
+          <button class="watch-back-btn" id="watch-back-btn">
+            <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+          </button>
+        </div>
         <div class="watch-layout">
           <!-- Left: Player + Info -->
           <div class="watch-primary">
