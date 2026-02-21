@@ -7,10 +7,15 @@ const state = {
   queue: [],
   queueIndex: -1,
   relatedQueue: [],
+  // playlists: { [name]: [videoObj, ...] }
+  playlists: JSON.parse(localStorage.getItem("yt_playlists") || "{}"),
+  // keep legacy "liked" as a "Liked" playlist alias (migration)
   liked: JSON.parse(localStorage.getItem("yt_liked") || "[]"),
+  // watch history: [{...videoObj, watchedAt: ISO}, ...]  newest first
+  history: JSON.parse(localStorage.getItem("yt_history") || "[]"),
   commentsNextPage: null,
   commentSort: "relevance",
-  userHasInteracted: false, // tracks if user has heard audio (for auto-continue unmute)
+  userHasInteracted: false,
 };
 
 // ===== DOM =====
@@ -26,8 +31,12 @@ const dom = {
   homePage: $("#home-page"),
   searchPage: $("#search-page"),
   watchPage: $("#watch-page"),
+  historyPage: $("#history-page"),
+  historyGrid: $("#history-grid"),
   categoryChips: $("#category-chips"),
   playlistList: $("#playlist-list"),
+  libraryTabs: $("#library-tabs"),
+  libPlaylistTabs: $("#lib-playlist-tabs"),
   // Watch page elements
   watchTitle: $("#watch-title"),
   watchChannel: $("#watch-channel"),
@@ -41,6 +50,12 @@ const dom = {
   commentsList: $("#comments-list"),
   commentsCount: $("#comments-count"),
   loadMoreComments: $("#load-more-comments"),
+  // Playlist modal
+  playlistModalOverlay: $("#playlist-modal-overlay"),
+  playlistPickerList: $("#playlist-picker-list"),
+  newPlaylistName: $("#new-playlist-name"),
+  createPlaylistBtn: $("#create-playlist-btn"),
+  playlistModalClose: $("#playlist-modal-close"),
 };
 
 // ===== Init =====
@@ -76,7 +91,6 @@ function restoreFromHash() {
   if (hash.startsWith("#watch=")) {
     const videoId = hash.substring(7);
     if (videoId) {
-      // Show loading state while fetching video
       showPage("watch");
       ytFetch("videos", {
         part: "snippet,statistics,contentDetails",
@@ -93,7 +107,6 @@ function restoreFromHash() {
         goHome(false);
         loadTrending();
       });
-      // Also preload trending in background for when user goes back
       loadTrending();
       history.replaceState({ page: "watch", videoId }, "", hash);
       return;
@@ -108,12 +121,24 @@ function restoreFromHash() {
     }
   } else if (hash === "#trending") {
     loadTrending();
+    navigateToPage("trending", false);
     history.replaceState({ page: "trending" }, "", hash);
+    return;
+  } else if (hash.startsWith("#library=")) {
+    const name = decodeURIComponent(hash.substring(9));
+    loadTrending();
+    showLibrary(name, false);
+    history.replaceState({ page: "library", playlist: name }, "", hash);
     return;
   } else if (hash === "#library") {
     loadTrending();
-    showLibrary();
+    showLibrary(null, false);
     history.replaceState({ page: "library" }, "", hash);
+    return;
+  } else if (hash === "#history") {
+    loadTrending();
+    showHistory(false);
+    history.replaceState({ page: "history" }, "", hash);
     return;
   }
 
@@ -404,11 +429,14 @@ function showSkeletons(container, count) {
 }
 
 // ===== Render Video Grid =====
-function renderVideoGrid(container, videos) {
+function renderVideoGrid(container, videos, opts = {}) {
   container.innerHTML = "";
   videos.forEach((video, idx) => {
     const card = document.createElement("div");
     card.className = "video-card";
+    const timeLabel = opts.showWatchedAt && video.watchedAt
+      ? "Watched " + timeAgo(video.watchedAt)
+      : timeAgo(video.publishedAt);
     card.innerHTML = `
       <div class="card-thumbnail">
         <img src="${video.thumbnail}" alt="${escapeAttr(video.title)}" loading="lazy" />
@@ -421,7 +449,7 @@ function renderVideoGrid(container, videos) {
           <div class="card-channel">${escapeHtml(video.channel)}</div>
           <div class="card-stats">
             <span>${formatViews(video.viewCount)}</span>
-            <span>${timeAgo(video.publishedAt)}</span>
+            <span>${timeLabel}</span>
           </div>
         </div>
       </div>
@@ -438,6 +466,9 @@ function renderVideoGrid(container, videos) {
 // ===== Watch Page (Video Player) =====
 function openWatchPage(video, skipHistory = false) {
   state.currentVideo = video;
+
+  // Record in watch history
+  addToHistory(video);
 
   // Push browser history so back button works
   if (!skipHistory) {
@@ -752,27 +783,84 @@ async function loadComments(videoId, append = false) {
   }
 }
 
-// ===== Like / Save =====
-function toggleLike() {
+// ===== Playlists =====
+function savePlaylists() {
+  localStorage.setItem("yt_playlists", JSON.stringify(state.playlists));
+}
+
+function isVideoInAnyPlaylist(videoId) {
+  return Object.values(state.playlists).some((videos) =>
+    videos.some((v) => v.id === videoId)
+  );
+}
+
+function openPlaylistModal() {
   if (!state.currentVideo) return;
-  const idx = state.liked.findIndex((v) => v.id === state.currentVideo.id);
-  if (idx >= 0) {
-    state.liked.splice(idx, 1);
-  } else {
-    state.liked.push({ ...state.currentVideo });
+  renderPlaylistPicker();
+  dom.playlistModalOverlay.classList.remove("hidden");
+  dom.newPlaylistName.value = "";
+  dom.newPlaylistName.focus();
+}
+
+function closePlaylistModal() {
+  dom.playlistModalOverlay.classList.add("hidden");
+}
+
+function renderPlaylistPicker() {
+  const video = state.currentVideo;
+  dom.playlistPickerList.innerHTML = "";
+  const names = Object.keys(state.playlists);
+  if (names.length === 0) {
+    dom.playlistPickerList.innerHTML =
+      '<p class="empty-text" style="padding:12px 0">No playlists yet — create one below.</p>';
+    return;
   }
-  localStorage.setItem("yt_liked", JSON.stringify(state.liked));
-  updateWatchLikeButton();
+  names.forEach((name) => {
+    const videos = state.playlists[name];
+    const inList = videos.some((v) => v.id === video.id);
+    const row = document.createElement("div");
+    row.className = "playlist-picker-row";
+    row.innerHTML = `
+      <div class="playlist-picker-icon">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-8 12.5v-9l6 4.5-6 4.5z"/></svg>
+      </div>
+      <div class="playlist-picker-name">${escapeHtml(name)}</div>
+      <div class="playlist-picker-count">${videos.length} video${videos.length !== 1 ? "s" : ""}</div>
+      <div class="playlist-picker-check ${inList ? "checked" : ""}">
+        ${inList ? '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z"/></svg>' : ""}
+      </div>
+    `;
+    row.addEventListener("click", () => {
+      if (inList) {
+        state.playlists[name] = videos.filter((v) => v.id !== video.id);
+      } else {
+        state.playlists[name].push({ ...video });
+      }
+      savePlaylists();
+      renderPlaylistPicker();
+      renderSavedPlaylist();
+      updateWatchLikeButton();
+    });
+    dom.playlistPickerList.appendChild(row);
+  });
+}
+
+function createPlaylist(name) {
+  name = name.trim();
+  if (!name || state.playlists[name]) return;
+  state.playlists[name] = [];
+  savePlaylists();
   renderSavedPlaylist();
+  renderPlaylistPicker();
 }
 
 function updateWatchLikeButton() {
   if (!state.currentVideo) return;
-  const isLiked = state.liked.some((v) => v.id === state.currentVideo.id);
-  dom.watchLikeBtn.classList.toggle("liked", isLiked);
+  const isSaved = isVideoInAnyPlaylist(state.currentVideo.id);
+  dom.watchLikeBtn.classList.toggle("liked", isSaved);
 
   const svgEl = dom.watchLikeBtn.querySelector("svg");
-  if (isLiked) {
+  if (isSaved) {
     svgEl.innerHTML =
       '<path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>';
     dom.watchLikeBtn.querySelector("span").textContent = "Saved";
@@ -784,28 +872,62 @@ function updateWatchLikeButton() {
 }
 
 function renderSavedPlaylist() {
-  if (state.liked.length === 0) {
-    dom.playlistList.innerHTML =
-      '<p class="empty-text">Saved videos will appear here</p>';
+  const names = Object.keys(state.playlists);
+  if (names.length === 0) {
+    dom.playlistList.innerHTML = '<p class="empty-text">No playlists yet</p>';
     return;
   }
   dom.playlistList.innerHTML = "";
-  state.liked.forEach((video, idx) => {
+  names.forEach((name) => {
+    const videos = state.playlists[name];
     const item = document.createElement("div");
-    item.className = "playlist-item";
+    item.className = "playlist-item playlist-folder-item";
     item.innerHTML = `
-      <img src="${video.thumbnail}" alt="${escapeAttr(video.title)}" />
+      <div class="playlist-folder-icon">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-8 12.5v-9l6 4.5-6 4.5z"/></svg>
+      </div>
       <div class="playlist-item-text">
-        <div class="playlist-item-title">${escapeHtml(video.title)}</div>
+        <div class="playlist-item-title">${escapeHtml(name)}</div>
+        <div class="playlist-item-count">${videos.length} video${videos.length !== 1 ? "s" : ""}</div>
       </div>
     `;
     item.addEventListener("click", () => {
-      state.queue = [...state.liked];
-      state.queueIndex = idx;
-      openWatchPage(video);
+      showLibrary(name);
+      history.pushState({ page: "library", playlist: name }, "", "#library=" + encodeURIComponent(name));
     });
     dom.playlistList.appendChild(item);
   });
+}
+
+// ===== Watch History =====
+function saveHistory() {
+  localStorage.setItem("yt_history", JSON.stringify(state.history));
+}
+
+function addToHistory(video) {
+  // Remove if already present (move to top)
+  state.history = state.history.filter((v) => v.id !== video.id);
+  state.history.unshift({ ...video, watchedAt: new Date().toISOString() });
+  // Keep max 200 entries
+  if (state.history.length > 200) state.history = state.history.slice(0, 200);
+  saveHistory();
+}
+
+function showHistory(pushState = true) {
+  showPage("history");
+  if (pushState) {
+    history.pushState({ page: "history" }, "", "#history");
+  }
+  setActiveNav("history");
+  renderHistory();
+}
+
+function renderHistory() {
+  if (state.history.length === 0) {
+    dom.historyGrid.innerHTML = '<p class="empty-text">No watch history yet.</p>';
+    return;
+  }
+  renderVideoGrid(dom.historyGrid, state.history, { showWatchedAt: true });
 }
 
 // ===== Navigation =====
@@ -813,12 +935,18 @@ function showPage(page) {
   dom.homePage.classList.toggle("hidden", page !== "home");
   dom.searchPage.classList.toggle("hidden", page !== "search");
   dom.watchPage.classList.toggle("hidden", page !== "watch");
+  dom.historyPage.classList.toggle("hidden", page !== "history");
 
   // Toggle body class for mobile watch page styling
   document.body.classList.toggle("watching", page === "watch");
 
-  // Show/hide chips on browse pages only
-  dom.categoryChips.classList.toggle("hidden", page === "watch");
+  // Show/hide chips on browse pages (not watch, not history, not library/search)
+  dom.categoryChips.classList.toggle("hidden", page !== "home");
+
+  // Hide library tabs unless on search/library page
+  if (dom.libraryTabs) {
+    dom.libraryTabs.classList.toggle("hidden", page !== "search");
+  }
 
   // Stop video and reset comments when leaving watch page
   if (page !== "watch") {
@@ -831,7 +959,7 @@ function showPage(page) {
     dom.commentsList.innerHTML = "";
     dom.loadMoreComments.classList.add("hidden");
     state.commentsNextPage = null;
-    document.title = "Mini YouTube";
+    document.title = "PlayLoop";
   }
 }
 
@@ -840,12 +968,7 @@ function goHome(pushState = true) {
   dom.searchInput.value = "";
   $$(".chip").forEach((c) => c.classList.remove("active"));
   $(".chip").classList.add("active");
-  $$(".nav-item").forEach((n) => n.classList.remove("active"));
-  $('[data-page="home"]').classList.add("active");
-  // Update bottom nav
-  $$(".bottom-nav-item").forEach((n) => n.classList.remove("active"));
-  const homeBtn = $(".bottom-nav-item[data-page='home']");
-  if (homeBtn) homeBtn.classList.add("active");
+  setActiveNav("home");
   if (pushState) {
     history.pushState({ page: "home" }, "", "#home");
   }
@@ -886,8 +1009,45 @@ function setupEventListeners() {
     watchBackBtn.addEventListener("click", goBack);
   }
 
-  // Watch page like button
-  dom.watchLikeBtn.addEventListener("click", toggleLike);
+  // Watch page save button → open playlist picker
+  dom.watchLikeBtn.addEventListener("click", openPlaylistModal);
+
+  // Playlist modal: close
+  dom.playlistModalClose.addEventListener("click", closePlaylistModal);
+  dom.playlistModalOverlay.addEventListener("click", (e) => {
+    if (e.target === dom.playlistModalOverlay) closePlaylistModal();
+  });
+
+  // Playlist modal: create new playlist
+  dom.createPlaylistBtn.addEventListener("click", () => {
+    const name = dom.newPlaylistName.value.trim();
+    if (name) {
+      createPlaylist(name);
+      dom.newPlaylistName.value = "";
+    }
+  });
+  dom.newPlaylistName.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") dom.createPlaylistBtn.click();
+  });
+
+  // New playlist button in sidebar
+  const newPlaylistBtn = $("#new-playlist-btn");
+  if (newPlaylistBtn) {
+    newPlaylistBtn.addEventListener("click", () => {
+      const name = prompt("Playlist name:");
+      if (name && name.trim()) createPlaylist(name.trim());
+    });
+  }
+
+  // Clear history button
+  const clearHistoryBtn = $("#clear-history-btn");
+  if (clearHistoryBtn) {
+    clearHistoryBtn.addEventListener("click", () => {
+      state.history = [];
+      saveHistory();
+      renderHistory();
+    });
+  }
 
   // Load more comments
   dom.loadMoreComments.addEventListener("click", () => {
@@ -993,33 +1153,84 @@ function setupEventListeners() {
 }
 
 // ===== Shared Navigation Logic =====
+function setActiveNav(page) {
+  $$(".nav-item").forEach((n) => n.classList.toggle("active", n.dataset.page === page));
+  $$(".bottom-nav-item").forEach((n) => n.classList.toggle("active", n.dataset.page === page));
+}
+
 function navigateToPage(page, pushState = true) {
   if (page === "home") {
     goHome(pushState);
   } else if (page === "trending") {
     showPage("home");
+    setActiveNav("trending");
     loadTrending();
     if (pushState) {
       history.pushState({ page: "trending" }, "", "#trending");
     }
   } else if (page === "library") {
-    showLibrary();
+    showLibrary(null, pushState);
     if (pushState) {
       history.pushState({ page: "library" }, "", "#library");
+    }
+  } else if (page === "history") {
+    showHistory(pushState);
+  }
+}
+
+function showLibrary(playlistName = null, pushState = true) {
+  showPage("search");
+  setActiveNav("library");
+
+  const names = Object.keys(state.playlists);
+
+  if (playlistName && state.playlists[playlistName]) {
+    // Show a specific playlist
+    dom.searchTitle.textContent = playlistName;
+    dom.libraryTabs.classList.remove("hidden");
+    renderLibraryTabs(playlistName);
+    const videos = state.playlists[playlistName];
+    if (videos.length > 0) {
+      renderVideoGrid(dom.searchResults, videos);
+    } else {
+      dom.searchResults.innerHTML = '<p class="empty-text">This playlist is empty. Save a video to add it here.</p>';
+    }
+  } else {
+    // Show all saved videos across all playlists
+    dom.searchTitle.textContent = "Library";
+    dom.libraryTabs.classList.remove("hidden");
+    renderLibraryTabs(null);
+    const allVideos = names.flatMap((n) => state.playlists[n]);
+    // Deduplicate
+    const seen = new Set();
+    const unique = allVideos.filter((v) => { if (seen.has(v.id)) return false; seen.add(v.id); return true; });
+    if (unique.length > 0) {
+      renderVideoGrid(dom.searchResults, unique);
+    } else {
+      dom.searchResults.innerHTML = '<p class="empty-text">No saved videos yet. Press Save while watching to add videos to a playlist.</p>';
     }
   }
 }
 
-function showLibrary() {
-  showPage("search");
-  dom.searchTitle.textContent = "Saved Videos";
-  dom.searchResults.innerHTML = "";
-  if (state.liked.length > 0) {
-    renderVideoGrid(dom.searchResults, state.liked);
-  } else {
-    dom.searchResults.innerHTML =
-      '<p class="empty-text">No saved videos yet. Click the Save button while watching to save videos.</p>';
-  }
+function renderLibraryTabs(activePlaylist) {
+  const allTab = dom.libraryTabs.querySelector(".lib-tab");
+  allTab.classList.toggle("active", !activePlaylist);
+  allTab.onclick = () => {
+    showLibrary(null, false);
+    history.pushState({ page: "library" }, "", "#library");
+  };
+
+  dom.libPlaylistTabs.innerHTML = "";
+  Object.keys(state.playlists).forEach((name) => {
+    const btn = document.createElement("button");
+    btn.className = "lib-tab" + (activePlaylist === name ? " active" : "");
+    btn.textContent = name;
+    btn.addEventListener("click", () => {
+      showLibrary(name, false);
+      history.pushState({ page: "library", playlist: name }, "", "#library=" + encodeURIComponent(name));
+    });
+    dom.libPlaylistTabs.appendChild(btn);
+  });
 }
 
 // ===== Media Session API (Lock Screen / Notification Controls) =====
@@ -1099,7 +1310,9 @@ window.addEventListener("popstate", (e) => {
   } else if (s.page === "trending") {
     navigateToPage("trending", false);
   } else if (s.page === "library") {
-    navigateToPage("library", false);
+    showLibrary(s.playlist || null, false);
+  } else if (s.page === "history") {
+    showHistory(false);
   } else if (s.page === "search" && s.query) {
     performSearch(s.query, false);
   } else if (s.page === "watch" && s.videoId) {
