@@ -10,6 +10,7 @@ const state = {
   liked: JSON.parse(localStorage.getItem("yt_liked") || "[]"),
   commentsNextPage: null,
   commentSort: "relevance",
+  userHasInteracted: false, // tracks if user has heard audio (for auto-continue unmute)
 };
 
 // ===== DOM =====
@@ -183,23 +184,73 @@ async function getTrending(maxResults = 50) {
 }
 
 async function searchVideos(query, maxResults = 50) {
-  const searchData = await ytFetch("search", {
-    part: "snippet",
-    type: "video",
-    q: query,
-    maxResults,
-    order: "date",
-  });
+  // Fetch two batches: one by relevance, one by date — merge and deduplicate
+  const [relevanceData, dateData] = await Promise.allSettled([
+    ytFetch("search", {
+      part: "snippet",
+      type: "video",
+      q: query,
+      maxResults,
+      order: "relevance",
+      videoDuration: "medium", // skip Shorts (< ~4 min)
+      safeSearch: "none",
+    }),
+    ytFetch("search", {
+      part: "snippet",
+      type: "video",
+      q: query,
+      maxResults: 25,
+      order: "date",
+      videoDuration: "medium",
+      safeSearch: "none",
+    }),
+  ]);
 
-  const ids = searchData.items.map((item) => item.id.videoId).filter(Boolean);
+  const seenIds = new Set();
+  const ids = [];
+
+  const addItems = (items) => {
+    for (const item of items) {
+      const id = item.id?.videoId;
+      if (id && !seenIds.has(id)) {
+        seenIds.add(id);
+        ids.push(id);
+      }
+    }
+  };
+
+  if (relevanceData.status === "fulfilled") addItems(relevanceData.value.items || []);
+  if (dateData.status === "fulfilled") addItems(dateData.value.items || []);
+
   if (ids.length === 0) return [];
 
-  const detailData = await ytFetch("videos", {
-    part: "snippet,statistics,contentDetails",
-    id: ids.join(","),
+  // Fetch full details in batches of 50 (API limit)
+  const batches = [];
+  for (let i = 0; i < ids.length; i += 50) {
+    batches.push(ids.slice(i, i + 50));
+  }
+  const detailResults = await Promise.all(
+    batches.map((batch) =>
+      ytFetch("videos", {
+        part: "snippet,statistics,contentDetails",
+        id: batch.join(","),
+      })
+    )
+  );
+
+  const videos = detailResults.flatMap((d) => (d.items || []).map(mapVideoItem));
+
+  // Score: relevance-first order, boost recent videos slightly
+  const relevanceOrder = new Map(ids.map((id, i) => [id, i]));
+  videos.sort((a, b) => {
+    const scoreDiff = (relevanceOrder.get(a.id) ?? 999) - (relevanceOrder.get(b.id) ?? 999);
+    // Boost videos published within the last 7 days by 10 positions
+    const aRecent = (Date.now() - new Date(a.publishedAt).getTime()) < 7 * 86400000 ? -10 : 0;
+    const bRecent = (Date.now() - new Date(b.publishedAt).getTime()) < 7 * 86400000 ? -10 : 0;
+    return (scoreDiff + aRecent) - bRecent;
   });
 
-  return detailData.items.map(mapVideoItem);
+  return videos;
 }
 
 async function getRelatedVideos(videoId, maxResults = 25) {
@@ -486,7 +537,9 @@ function createYTPlayer(videoId) {
       rel: 0,
       playsinline: 1,
       enablejsapi: 1,
-      mute: 1, // Mute initially to allow mobile autoplay
+      // Only mute for the very first video — lets mobile browsers allow autoplay.
+      // Once the user has heard audio, subsequent videos play unmuted.
+      mute: state.userHasInteracted ? 0 : 1,
     },
     events: {
       onReady: onPlayerReady,
@@ -496,23 +549,36 @@ function createYTPlayer(videoId) {
 }
 
 function onPlayerReady(event) {
-  // Start playing (needed for mobile — muted autoplay is allowed)
-  event.target.playVideo();
-  // Wait for actual playback to begin before unmuting
+  const player = event.target;
+  // Start playing (needed for mobile — muted autoplay is allowed by browsers)
+  player.playVideo();
+
+  // If the user has already heard audio in this session, unmute immediately
+  if (state.userHasInteracted) {
+    try {
+      player.unMute();
+      player.setVolume(100);
+    } catch (e) {}
+    return;
+  }
+
+  // First video: wait for actual playback to begin before unmuting
+  // (muted autoplay gets past mobile browser restrictions; then we unmute)
   const unmuteCheck = setInterval(() => {
-    if (state.player && state.player.getPlayerState) {
-      const ps = state.player.getPlayerState();
+    try {
+      const ps = player.getPlayerState();
       if (ps === YT.PlayerState.PLAYING) {
         clearInterval(unmuteCheck);
-        try {
-          state.player.unMute();
-          state.player.setVolume(100);
-        } catch (e) {}
+        player.unMute();
+        player.setVolume(100);
+        state.userHasInteracted = true;
       }
+    } catch (e) {
+      clearInterval(unmuteCheck);
     }
   }, 200);
-  // Stop trying after 5 seconds
-  setTimeout(() => clearInterval(unmuteCheck), 5000);
+  // Stop trying after 6 seconds
+  setTimeout(() => clearInterval(unmuteCheck), 6000);
 }
 
 function onPlayerStateChange(event) {
