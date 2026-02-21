@@ -481,10 +481,21 @@ function openWatchPage(video, skipHistory = false) {
   // Scroll to top
   document.querySelector(".content-area").scrollTop = 0;
 
-  // Destroy previous player if exists
-  if (state.player && state.player.destroy) {
-    try { state.player.destroy(); } catch (e) {}
-    state.player = null;
+  // Destroy previous player only if switching to a different video
+  const isSameVideo = state.player && state._playingVideoId === video.id;
+  if (!isSameVideo) {
+    if (state.player && state.player.destroy) {
+      try { state.player.destroy(); } catch (e) {}
+      state.player = null;
+    }
+  }
+
+  state._playingVideoId = video.id;
+
+  // If same video is already playing (e.g. user clicked mini bar to return), just show page
+  if (isSameVideo) {
+    updateNowPlayingBar(false);
+    return;
   }
 
   // Create player using YouTube IFrame API (supports background playback)
@@ -621,6 +632,9 @@ function onPlayerStateChange(event) {
       navigator.mediaSession.playbackState = "paused";
     }
   }
+
+  // Refresh mini player play/pause icon
+  refreshNowPlayingBtn();
 
   // Auto-play next video in queue when current one ends
   if (event.data === YT.PlayerState.ENDED) {
@@ -940,7 +954,7 @@ function showPage(page) {
   // Toggle body class for mobile watch page styling
   document.body.classList.toggle("watching", page === "watch");
 
-  // Show/hide chips on browse pages (not watch, not history, not library/search)
+  // Show/hide chips only on home page
   dom.categoryChips.classList.toggle("hidden", page !== "home");
 
   // Hide library tabs unless on search/library page
@@ -948,19 +962,114 @@ function showPage(page) {
     dom.libraryTabs.classList.toggle("hidden", page !== "search");
   }
 
-  // Stop video and reset comments when leaving watch page
-  if (page !== "watch") {
-    if (state.player && state.player.destroy) {
-      try { state.player.destroy(); } catch (e) {}
-      state.player = null;
+  if (page === "watch") {
+    // Hide the mini player bar when on the full watch page
+    updateNowPlayingBar(false);
+    document.title = state.currentVideo ? `${state.currentVideo.title} — PlayLoop` : "PlayLoop";
+  } else {
+    // When navigating away from watch, keep the player alive — just show mini bar
+    if (state.player || state.currentVideo) {
+      updateNowPlayingBar(true);
     }
-    const playerContainer = $("#yt-player");
-    playerContainer.innerHTML = "";
+    // Reset comments UI state (but don't destroy player)
     dom.commentsList.innerHTML = "";
     dom.loadMoreComments.classList.add("hidden");
     state.commentsNextPage = null;
-    document.title = "PlayLoop";
+    if (!state.currentVideo) {
+      document.title = "PlayLoop";
+    }
   }
+}
+
+function destroyPlayer() {
+  if (state.player && state.player.destroy) {
+    try { state.player.destroy(); } catch (e) {}
+    state.player = null;
+  }
+  const playerContainer = $("#yt-player");
+  if (playerContainer) playerContainer.innerHTML = "";
+  state.currentVideo = null;
+  updateNowPlayingBar(false);
+  document.title = "PlayLoop";
+}
+
+// ===== Mini Now-Playing Bar =====
+function updateNowPlayingBar(show) {
+  let bar = $("#now-playing-bar");
+  if (!show) {
+    if (bar) bar.classList.add("hidden");
+    document.body.classList.remove("has-now-playing");
+    return;
+  }
+  if (!state.currentVideo) return;
+
+  const v = state.currentVideo;
+  if (!bar) {
+    bar = document.createElement("div");
+    bar.id = "now-playing-bar";
+    document.body.appendChild(bar);
+  }
+
+  bar.className = "now-playing-bar";
+  bar.innerHTML = `
+    <img class="np-thumb" src="${v.thumbnail}" alt="" />
+    <div class="np-info">
+      <div class="np-title">${escapeHtml(v.title)}</div>
+      <div class="np-channel">${escapeHtml(v.channel)}</div>
+    </div>
+    <div class="np-controls">
+      <button class="np-btn" id="np-playpause" title="Play/Pause">
+        <svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+      </button>
+      <button class="np-btn" id="np-close" title="Close player">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+      </button>
+    </div>
+  `;
+
+  // Click on title/thumb → go back to watch page
+  bar.querySelector(".np-thumb").addEventListener("click", () => openWatchPage(v));
+  bar.querySelector(".np-info").addEventListener("click", () => openWatchPage(v));
+
+  // Play/pause
+  bar.querySelector("#np-playpause").addEventListener("click", (e) => {
+    e.stopPropagation();
+    togglePlayPause();
+  });
+
+  // Close
+  bar.querySelector("#np-close").addEventListener("click", (e) => {
+    e.stopPropagation();
+    destroyPlayer();
+  });
+
+  bar.classList.remove("hidden");
+  document.body.classList.add("has-now-playing");
+  refreshNowPlayingBtn();
+}
+
+function refreshNowPlayingBtn() {
+  const btn = $("#np-playpause");
+  if (!btn || !state.player) return;
+  try {
+    const ps = state.player.getPlayerState();
+    const isPlaying = ps === YT.PlayerState.PLAYING;
+    btn.innerHTML = isPlaying
+      ? '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>'
+      : '<svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+  } catch (e) {}
+}
+
+function togglePlayPause() {
+  if (!state.player) return;
+  try {
+    const ps = state.player.getPlayerState();
+    if (ps === YT.PlayerState.PLAYING) {
+      state.player.pauseVideo();
+    } else {
+      state.player.playVideo();
+    }
+  } catch (e) {}
 }
 
 function goHome(pushState = true) {

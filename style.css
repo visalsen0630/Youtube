@@ -1055,6 +1055,88 @@ input {
 }
 .clear-history-btn:hover { background: rgba(62, 166, 255, 0.1); }
 
+/* ===== Now Playing Mini Bar ===== */
+.now-playing-bar {
+  position: fixed;
+  bottom: 0;
+  left: var(--sidebar-width);
+  right: 0;
+  height: 64px;
+  background: #1f1f1f;
+  border-top: 1px solid #333;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 16px;
+  z-index: 200;
+  box-shadow: 0 -4px 24px rgba(0,0,0,0.5);
+  animation: slideUpBar 0.2s ease;
+}
+
+.now-playing-bar.hidden { display: none; }
+
+@keyframes slideUpBar {
+  from { transform: translateY(100%); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+
+.np-thumb {
+  width: 48px;
+  height: 36px;
+  object-fit: cover;
+  border-radius: 4px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.np-info {
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.np-title {
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-primary);
+}
+
+.np-channel {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.np-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.np-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-primary);
+  transition: background 0.15s;
+}
+.np-btn:hover { background: var(--bg-hover); }
+
+/* Push content area up so nothing is hidden behind mini bar */
+body.has-now-playing .content-area {
+  padding-bottom: calc(64px + 24px);
+}
+
 /* ===== Mobile Header ===== */
 .mobile-header {
   display: none;
@@ -1317,5 +1399,18 @@ input {
   /* Mobile search active: hide header */
   body.mobile-search-active .mobile-header {
     display: none;
+  }
+
+  /* Now-playing bar on mobile: full width, sits above bottom nav */
+  .now-playing-bar {
+    left: 0;
+    bottom: calc(56px + env(safe-area-inset-bottom, 0px));
+    height: 60px;
+    padding: 0 12px;
+  }
+
+  /* When mini bar is visible on mobile, push content up to avoid overlap */
+  body.has-now-playing .content-area {
+    padding-bottom: calc(56px + 60px + env(safe-area-inset-bottom, 0px) + 16px);
   }
 }
